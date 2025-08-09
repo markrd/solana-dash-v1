@@ -248,6 +248,54 @@ try:
 except Exception as e:
     st.error(f"SOL/ETH ratio error: {e}")
 # --------------------
+# Global Crypto Context
+# --------------------
+st.subheader("Global Crypto Context")
+
+@st.cache_data(ttl=600)
+def cg_global():
+    r = requests.get("https://api.coingecko.com/api/v3/global", timeout=8)
+    r.raise_for_status()
+    return r.json()
+
+def fmt_large_usd(x):
+    if x is None:
+        return "—"
+    try:
+        x = float(x)
+        if x >= 1e12:
+            return f"${x/1e12:,.2f}T"
+        if x >= 1e9:
+            return f"${x/1e9:,.1f}B"
+        if x >= 1e6:
+            return f"${x/1e6:,.0f}M"
+        return f"${x:,.0f}"
+    except Exception:
+        return "—"
+
+try:
+    g = cg_global().get("data", {})
+    total = g.get("total_market_cap", {}).get("usd")
+    btc_pct = g.get("market_cap_percentage", {}).get("btc")  # percent
+
+    btc_cap = total * (btc_pct / 100.0) if (total is not None and btc_pct is not None) else None
+    alt_cap = (total - btc_cap) if (total is not None and btc_cap is not None) else None
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("BTC Dominance", f"{btc_pct:.1f}%" if btc_pct is not None else "—")
+    with c2:
+        st.metric("TOTAL Market Cap", fmt_large_usd(total))
+    with c3:
+        st.metric("Altcoin Market Cap", fmt_large_usd(alt_cap))
+
+    st.caption("Source: CoinGecko /global")
+except Exception as e:
+    st.error(f"Global context error: {e}")
+
+
+
+# --------------------
 # 30-Day Trend Signals (TVL, Stablecoins, SOL/ETH)
 # --------------------
 st.subheader("30-Day Trend Signals")
