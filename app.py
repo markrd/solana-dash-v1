@@ -247,6 +247,84 @@ try:
         st.caption(f"Latest ratio: {latest:.4f} | 30-day avg: {ma30:.4f}")
 except Exception as e:
     st.error(f"SOL/ETH ratio error: {e}")
+# --------------------
+# 30-Day Trend Signals (TVL, Stablecoins, SOL/ETH)
+# --------------------
+st.subheader("30-Day Trend Signals")
+
+from datetime import timedelta
+
+def _pct_change_30d(df, value_col):
+    """Percent change over ~30 days using the first point within last 30d as baseline."""
+    if df is None or df.empty or value_col not in df:
+        return None
+    latest_date = df["date"].max()
+    base_win = df[df["date"] >= latest_date - pd.Timedelta(days=30)]
+    if base_win.empty:
+        base_val = float(df.iloc[0][value_col])
+    else:
+        base_val = float(base_win.iloc[0][value_col])
+    latest_val = float(df.iloc[-1][value_col])
+    if base_val == 0:
+        return None
+    return (latest_val - base_val) / base_val * 100.0
+
+def _light(pct):
+    if pct is None:
+        return "⚪"
+    if pct >= 5:
+        return "🟢"
+    if pct <= -5:
+        return "🔴"
+    return "🟠"
+
+# TVL 30d change
+try:
+    _tvl_df = solana_tvl_series()
+    tvl_30d = _pct_change_30d(_tvl_df.rename(columns={"tvl":"value"}), "value")
+except Exception:
+    tvl_30d = None
+
+# Stablecoin liquidity proxy = USDT + USDC + DAI (market caps)
+@st.cache_data(ttl=3600)
+def cg_market_caps(coin_id: str, days: int = 90):
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+    r = requests.get(url, params={"vs_currency": "usd", "days": days}, timeout=10)
+    r.raise_for_status()
+    js = r.json()
+    caps = js.get("market_caps", [])
+    if not caps:
+        return pd.DataFrame(columns=["date", "cap"])
+    df = pd.DataFrame(caps, columns=["ts", "cap"])
+    df["date"] = pd.to_datetime(df["ts"], unit="ms")
+    return df[["date", "cap"]]
+
+stable_30d = None
+try:
+    usdt = cg_market_caps("tether", days=90)
+    usdc = cg_market_caps("usd-coin", days=90)
+    dai  = cg_market_caps("dai", days=90)
+    sc = pd.merge_asof(usdt.sort_values("date"),
+                       usdc.sort_values("date"),
+                       on="date", direction="nearest",
+                       tolerance=pd.Timedelta("1H"),
+                       suffixes=("_usdt", "_usdc")).dropna()
+    sc = pd.merge_asof(sc.sort_values("date"),
+                       dai.sort_values("date"),
+                       on="date", direction="nearest",
+                       tolerance=pd.Timedelta("1H"))
+    sc["stable_total"] = sc[["cap_usdt", "cap_usdc", "cap"]].sum(axis=1)  # 'cap' here is DAI
+    stable_30d = _pct_change_30d(sc.rename(columns={"stable_total":"value"}), "value")
+except Exception as e:
+    stable_30d = None
+    st.caption(f"Stablecoin proxy fetch issue (USDT+USDC+DAI): {e}")
+
+# SOL/ETH vs its 30d average (needs the SOL/ETH block to have run, defines 'merged')
+rel_30d = None
+try:
+    latest_ratio = merged.iloc[-1]["sol_eth_ratio"]
+    ma30 = merged["sol_eth_ratio"].tail(30).mean()
+    if
 
 st.subheader("News Watch")
 left, right = st.columns(2)
