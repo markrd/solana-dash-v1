@@ -209,6 +209,44 @@ else:
         st.metric("VIX (implied vol)", _fmt_vix(vix_v))
     with c3:
         st.metric("Fed Balance Sheet (WALCL)", _fmt_trillions_from_millions(walcl_v))
+# --------------------
+# SOL / ETH (Relative Strength)
+# --------------------
+st.subheader("SOL vs ETH — Relative Strength")
+
+@st.cache_data(ttl=3600)
+def cg_market_chart(coin_id: str, days: int = 365):
+    """CoinGecko market_chart prices (USD). Returns DataFrame with 'date' and 'price'."""
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+    r = requests.get(url, params={"vs_currency": "usd", "days": days}, timeout=10)
+    r.raise_for_status()
+    js = r.json()
+    prices = js.get("prices", [])
+    if not prices:
+        return pd.DataFrame(columns=["date", "price"])
+    df = pd.DataFrame(prices, columns=["ts", "price"])
+    df["date"] = pd.to_datetime(df["ts"], unit="ms")
+    return df[["date", "price"]]
+
+try:
+    sol_df = cg_market_chart("solana", days=365)
+    eth_df = cg_market_chart("ethereum", days=365)
+    if sol_df.empty or eth_df.empty:
+        st.warning("Couldn’t load history from CoinGecko (rate limit?). Try refresh.")
+    else:
+        merged = pd.merge_asof(
+            sol_df.sort_values("date"), 
+            eth_df.sort_values("date"),
+            on="date", direction="nearest", tolerance=pd.Timedelta("1H"),
+            suffixes=("_sol", "_eth")
+        ).dropna()
+        merged["sol_eth_ratio"] = merged["price_sol"] / merged["price_eth"]
+        st.line_chart(merged.set_index("date")["sol_eth_ratio"])
+        latest = merged.iloc[-1]["sol_eth_ratio"]
+        ma30 = merged["sol_eth_ratio"].tail(30).mean()
+        st.caption(f"Latest ratio: {latest:.4f} | 30-day avg: {ma30:.4f}")
+except Exception as e:
+    st.error(f"SOL/ETH ratio error: {e}")
 
 st.subheader("News Watch")
 left, right = st.columns(2)
