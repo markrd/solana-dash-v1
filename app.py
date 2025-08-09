@@ -453,6 +453,84 @@ else:
         lines.append(f"- {name}: " + ("—" if s is None else f"{s:.0f}"))
     st.caption("Components\n" + "\n".join(lines))
 
+# --------------------
+# Explain this dashboard (GPT)
+# --------------------
+from openai import OpenAI
+import json
+
+def _to_num(x):
+    try:
+        return None if x is None else float(x)
+    except Exception:
+        return None
+
+@st.cache_data(ttl=30)
+def build_dashboard_snapshot():
+    """Gather key metrics from the current session for the explainer."""
+    snap = {
+        "timestamp_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "prices": {
+            "sol_usd": _to_num(data.get("solana", {}).get("usd")) if "data" in locals() else None,
+            "eth_usd": _to_num(data.get("ethereum", {}).get("usd")) if "data" in locals() else None,
+        },
+        "tvl": {
+            "latest": None if 'df' not in locals() or df.empty else _to_num(df.iloc[-1]["tvl"]),
+            "chg_30d_pct": _to_num(tvl_30d),
+        },
+        "stablecoins": {
+            "chg_30d_pct": _to_num(stable_30d),
+        },
+        "relative_strength": {
+            "sol_eth_ratio_latest": None if 'merged' not in locals() or merged.empty else _to_num(merged.iloc[-1]["sol_eth_ratio"]),
+            "vs_30d_avg_pct": _to_num(rel_30d),
+        },
+        "macro": {
+            "yield_curve_10y_minus_2y": _to_num(yc_spread) if 'yc_spread' in locals() else None,
+            "vix": _to_num(vix_v) if 'vix_v' in locals() else None,
+            "fed_balance_sheet_trillions": None if 'walcl_v' not in locals() or walcl_v is None else float(walcl_v)/1_000_000,
+        },
+        "bullishness_score": _to_num(st.session_state.get("last_bull_score")),
+    }
+    return snap
+
+st.divider()
+st.subheader("🧠 Explain this dashboard")
+
+with st.expander("Ask GPT for a quick read (keeps your data local to this app)"):
+    tone = st.selectbox("Tone", ["Concise bullets", "Narrative summary", "Risk-focused", "Beginner-friendly"])
+    if st.button("Generate commentary"):
+        try:
+            snapshot = build_dashboard_snapshot()
+            client = OpenAI()  # reads OPENAI_API_KEY from secrets/env
+            prompt = f"""
+You are a crypto markets analyst. Explain what the dashboard says about Solana and broader crypto.
+Keep it to 6–10 bullet points. If a metric is missing, skip it.
+
+TONE: {tone}
+
+DATA (JSON):
+{json.dumps(snapshot, separators=(',',':'))}
+
+Guidelines:
+- Start with a one-line TL;DR.
+- Cover SOL vs ETH relative strength, Solana TVL trend, stablecoin liquidity trend.
+- Add macro color if yield curve or VIX stands out; otherwise say 'macro neutral'.
+- Mention Bullishness score level and what would move it up/down next.
+- End with 2 watch-items for the coming week.
+"""
+            resp = client.responses.create(
+                model="gpt-4o-mini",
+                input=prompt,
+            )
+            st.markdown(resp.output_text)
+        except Exception as e:
+            st.error(f"GPT explain error: {e}")
+            st.caption("Tip: ensure OPENAI_API_KEY is set in app Secrets. Reduce auto-refresh if you hit rate limits.")
+
+
+
+
 
 st.divider()
 
