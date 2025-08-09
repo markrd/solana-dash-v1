@@ -94,7 +94,7 @@ def fmt_billion(x):
     except Exception:
         return "—"
 
-st.title("Solana Morning Dashboard — v1")
+st.title("Solana Dashboard")
 col1, col2 = st.columns(2)
 with col1: st.success("✅ App booted")
 with col2: st.write(f"Local time (UTC+4): {datetime.now(timezone(timedelta(hours=4))).strftime('%Y-%m-%d %H:%M')}")
