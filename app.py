@@ -454,6 +454,34 @@ else:
     st.caption("Components\n" + "\n".join(lines))
 
 # --------------------
+# Alerts — key risk flags
+# --------------------
+st.subheader("Alerts")
+
+alerts = []
+
+def add_alert(ok, msg):
+    if ok:
+        alerts.append(msg)
+
+# Thresholds (tweak to taste)
+add_alert(tvl_30d is not None and tvl_30d <= -10, f"Solana TVL 30d is {tvl_30d:.1f}% (≤ -10%).")
+add_alert(stable_30d is not None and stable_30d <= -10, f"Stablecoin cap 30d is {stable_30d:.1f}% (≤ -10%).")
+add_alert(rel_30d is not None and rel_30d <= -5, f"SOL/ETH vs 30d avg is {rel_30d:.1f}% (≤ -5%).")
+add_alert('vix_v' in locals() and vix_v is not None and vix_v >= 25, f"VIX is {vix_v:.1f} (≥ 25).")
+add_alert('yc_spread' in locals() and yc_spread is not None and yc_spread < 0, f"Yield curve is inverted ({yc_spread:.2f}%).")
+
+if alerts:
+    st.warning("⚠️ Risk flags active:\n\n- " + "\n- ".join(alerts))
+else:
+    st.success("✅ No major risk flags right now.")
+
+
+
+
+
+
+# --------------------
 # Explain this dashboard (GPT)
 # --------------------
 from openai import OpenAI
