@@ -209,6 +209,72 @@ else:
         st.metric("VIX (implied vol)", _fmt_vix(vix_v))
     with c3:
         st.metric("Fed Balance Sheet (WALCL)", _fmt_trillions_from_millions(walcl_v))
+
+# --------------------
+# Bullishness Score (0–100)
+# --------------------
+st.subheader("Bullishness Score")
+
+# Map % change → 0..100 (−20% → 0, 0% → 50, +20% → 100). Clamp to [0,100].
+def pct_to_score(pct, pos=20.0, neg=-20.0):
+    if pct is None:
+        return None
+    denom = pos if pct >= 0 else abs(neg)
+    score = 50 + (pct / denom) * 50
+    return max(0, min(100, score))
+
+# Convert each signal to a score
+score_tvl     = pct_to_score(tvl_30d)                # TVL 30d %
+score_stables = pct_to_score(stable_30d)             # USDT+USDC+DAI 30d %
+score_rel     = pct_to_score(rel_30d, 15.0, -15.0)   # SOL/ETH vs 30d avg (narrower band)
+
+# Weights (tweak if you like)
+weights = {"tvl": 0.40, "stables": 0.35, "rel": 0.25}
+
+components = [
+    ("TVL",     score_tvl,     weights["tvl"]),
+    ("Stables", score_stables, weights["stables"]),
+    ("SOL/ETH", score_rel,     weights["rel"]),
+]
+
+# Weighted average over available components
+num, den = 0.0, 0.0
+for _, s, w in components:
+    if s is not None:
+        num += s * w
+        den += w
+score = (num / den) if den > 0 else None
+
+# Store last score for delta
+prev = st.session_state.get("last_bull_score")
+
+if score is None:
+    st.info("Not enough data yet to compute a score.")
+else:
+    delta = None if prev is None else score - prev
+    st.session_state["last_bull_score"] = score
+
+    # Traffic light
+    light = "🟢" if score >= 70 else ("🟠" if score >= 40 else "🔴")
+
+    c1, c2 = st.columns([1,1])
+    with c1:
+        st.metric("Bullishness (0–100)", f"{score:.0f}", (f"{delta:+.0f}" if delta is not None else None))
+    with c2:
+        st.write(f"Signal: {light}")
+
+    # Small breakdown
+    lines = []
+    for name, s, _ in components:
+        lines.append(f"- {name}: " + ("—" if s is None else f"{s:.0f}"))
+    st.caption("Components\n" + "\n".join(lines))
+
+
+
+
+
+
+
 # --------------------
 # SOL / ETH (Relative Strength)
 # --------------------
