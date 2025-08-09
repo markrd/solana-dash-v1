@@ -13,7 +13,7 @@ try:
 except Exception:
     pass
 
-st.set_page_config(page_title="Solana Mini Dashboard", layout="wide")
+st.set_page_config(page_title="Solana Dashboard", layout="wide")
 
 @st.cache_data(ttl=60)
 def cg_simple_prices(ids_csv: str):
