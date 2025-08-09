@@ -129,7 +129,7 @@ if not FRED_API_KEY:
 else:
     c1, c2 = st.columns(2)
     with c1:
-        pmi = fred_series("INPRO", observation_start="2015-01-01")
+        pmi = fred_series("INDPRO", observation_start="2015-01-01")
         if pmi is None or pmi.empty:
             st.warning("PMI data unavailable.")
         else:
