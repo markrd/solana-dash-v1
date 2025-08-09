@@ -252,42 +252,39 @@ except Exception as e:
 # --------------------
 st.subheader("30-Day Trend Signals")
 
-from datetime import timedelta
-
-def _pct_change_30d(df, value_col):
+def pct_change_over_30d(df, col):
     """Percent change over ~30 days using the first point within last 30d as baseline."""
-    if df is None or df.empty or value_col not in df:
+    if df is None or df.empty or col not in df:
         return None
-    latest_date = df["date"].max()
-    base_win = df[df["date"] >= latest_date - pd.Timedelta(days=30)]
-    if base_win.empty:
-        base_val = float(df.iloc[0][value_col])
-    else:
-        base_val = float(base_win.iloc[0][value_col])
-    latest_val = float(df.iloc[-1][value_col])
+    df = df[["date", col]].dropna()
+    if df.empty:
+        return None
+    latest = df["date"].max()
+    base_df = df[df["date"] >= latest - pd.Timedelta(days=30)]
+    base_val = float(base_df.iloc[0][col]) if not base_df.empty else float(df.iloc[0][col])
+    last_val = float(df.iloc[-1][col])
     if base_val == 0:
         return None
-    return (latest_val - base_val) / base_val * 100.0
+    return (last_val - base_val) / base_val * 100.0
 
-def _light(pct):
-    if pct is None:
+def light(p):
+    if p is None:
         return "⚪"
-    if pct >= 5:
+    if p >= 5:
         return "🟢"
-    if pct <= -5:
+    if p <= -5:
         return "🔴"
     return "🟠"
 
 # TVL 30d change
 try:
-    _tvl_df = solana_tvl_series()
-    tvl_30d = _pct_change_30d(_tvl_df.rename(columns={"tvl":"value"}), "value")
+    tvl_df = solana_tvl_series().rename(columns={"tvl": "value"})
+    tvl_30d = pct_change_over_30d(tvl_df, "value")
 except Exception:
     tvl_30d = None
 
-# Stablecoin liquidity proxy = USDT + USDC + DAI (market caps)
 @st.cache_data(ttl=3600)
-def cg_market_caps(coin_id: str, days: int = 90):
+def cg_caps(coin_id, days=90):
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
     r = requests.get(url, params={"vs_currency": "usd", "days": days}, timeout=10)
     r.raise_for_status()
@@ -299,49 +296,51 @@ def cg_market_caps(coin_id: str, days: int = 90):
     df["date"] = pd.to_datetime(df["ts"], unit="ms")
     return df[["date", "cap"]]
 
-stable_30d = None
+# Stablecoin liquidity proxy = USDT + USDC + DAI
 try:
-    usdt = cg_market_caps("tether", days=90)
-    usdc = cg_market_caps("usd-coin", days=90)
-    dai  = cg_market_caps("dai", days=90)
-    sc = pd.merge_asof(usdt.sort_values("date"),
-                       usdc.sort_values("date"),
-                       on="date", direction="nearest",
-                       tolerance=pd.Timedelta("1H"),
-                       suffixes=("_usdt", "_usdc")).dropna()
-    sc = pd.merge_asof(sc.sort_values("date"),
-                       dai.sort_values("date"),
-                       on="date", direction="nearest",
-                       tolerance=pd.Timedelta("1H"))
-    sc["stable_total"] = sc[["cap_usdt", "cap_usdc", "cap"]].sum(axis=1)  # 'cap' here is DAI
-    stable_30d = _pct_change_30d(sc.rename(columns={"stable_total":"value"}), "value")
-except Exception as e:
+    usdt = cg_caps("tether")
+    usdc = cg_caps("usd-coin")
+    dai  = cg_caps("dai")
+    sc = pd.merge_asof(
+        usdt.sort_values("date"),
+        usdc.sort_values("date"),
+        on="date", direction="nearest",
+        tolerance=pd.Timedelta("1H"),
+        suffixes=("_usdt", "_usdc")
+    ).dropna()
+    sc = pd.merge_asof(
+        sc.sort_values("date"),
+        dai.sort_values("date"),
+        on="date", direction="nearest",
+        tolerance=pd.Timedelta("1H")
+    )
+    sc["total"] = sc[["cap_usdt", "cap_usdc", "cap"]].sum(axis=1)  # 'cap' is DAI
+    stable_30d = pct_change_over_30d(sc.rename(columns={"total": "value"}), "value")
+except Exception:
     stable_30d = None
-    st.caption(f"Stablecoin proxy fetch issue (USDT+USDC+DAI): {e}")
 
-# SOL/ETH vs its 30d average (needs the SOL/ETH block to have run, defines 'merged')
-rel_30d = None
+# SOL/ETH vs 30d average (requires 'merged' from the relative-strength block)
 try:
-    latest_ratio = merged.iloc[-1]["sol_eth_ratio"]
-    ma30 = merged["sol_eth_ratio"].tail(30).mean()
-    if
+    if "merged" in locals() and not merged.empty:
+        latest_ratio = float(merged.iloc[-1]["sol_eth_ratio"])
+        ma30 = float(merged["sol_eth_ratio"].tail(30).mean())
+        rel_30d = (latest_ratio / ma30 - 1) * 100.0 if ma30 != 0 else None
+    else:
+        rel_30d = None
+except Exception:
+    rel_30d = None
 
-st.subheader("News Watch")
-left, right = st.columns(2)
-with left:
-    st.markdown("**CoinDesk**")
-    try:
-        for it in fetch_rss("https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml")[:8]:
-            st.write(f"- [{it['title']}]({it['link']})")
-    except Exception as e:
-        st.error(f"CoinDesk RSS error: {e}")
-with right:
-    st.markdown("**The Block**")
-    try:
-        for it in fetch_rss("https://www.theblock.co/rss.xml")[:8]:
-            st.write(f"- [{it['title']}]({it['link']})")
-    except Exception as e:
-        st.error(f"The Block RSS error: {e}")
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.metric("TVL 30d change", f"{tvl_30d:.1f}%" if tvl_30d is not None else "—")
+    st.write(light(tvl_30d))
+with c2:
+    st.metric("Stablecoins 30d (USDT+USDC+DAI)", f"{stable_30d:.1f}%" if stable_30d is not None else "—")
+    st.write(light(stable_30d))
+with c3:
+    st.metric("SOL/ETH vs 30d avg", f"{rel_30d:.1f}%" if rel_30d is not None else "—")
+    st.write(light(rel_30d))
+
 
 st.divider()
 
