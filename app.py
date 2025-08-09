@@ -140,7 +140,7 @@ with rcol:
 
 st.divider()
 
-st.subheader("Macro: PMI & M2 (FRED)")
+st.subheader("Macro: PMI & M2")
 if not FRED_API_KEY:
     st.info("Add FRED_API_KEY in Streamlit → Manage app → Settings → Secrets to enable PMI (NAPM) and M2 charts.")
 else:
@@ -161,6 +161,54 @@ else:
             st.caption("M2 money stock (not seasonally adjusted).")
 
 st.divider()
+# --------------------
+# Risk & Liquidity (FRED)
+# --------------------
+st.subheader("Risk & Liquidity (FRED)")
+if not FRED_API_KEY:
+    st.info("Add FRED_API_KEY in app Secrets to enable this panel.")
+else:
+    # Helper to get latest numeric value from a fred_series() DataFrame
+    def _latest(df):
+        try:
+            return None if df is None or df.empty else float(df.dropna().iloc[-1]["value"])
+        except Exception:
+            return None
+
+    # Pull series
+    dgs10 = fred_series("DGS10", observation_start="2015-01-01")   # 10-year Treasury
+    dgs2  = fred_series("DGS2",  observation_start="2015-01-01")   # 2-year Treasury
+    vix   = fred_series("VIXCLS", observation_start="2015-01-01")  # VIX
+    walcl = fred_series("WALCL",  observation_start="2015-01-01")  # Fed balance sheet (millions USD)
+
+    # Latest values
+    t10 = _latest(dgs10)
+    t2  = _latest(dgs2)
+    vix_v = _latest(vix)
+    walcl_v = _latest(walcl)  # millions of USD
+
+    # Compute 10y-2y spread
+    yc_spread = None
+    if t10 is not None and t2 is not None:
+        yc_spread = t10 - t2
+
+    # Formatters
+    def _fmt_spread(x):
+        return "—" if x is None else f"{x:.2f}"
+
+    def _fmt_vix(x):
+        return "—" if x is None else f"{x:.1f}"
+
+    def _fmt_trillions_from_millions(x):
+        return "—" if x is None else f"${x/1_000_000:.2f}T"
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Yield Curve (10y−2y, %)", _fmt_spread(yc_spread), help="> 0 = normal; < 0 = inverted")
+    with c2:
+        st.metric("VIX (implied vol)", _fmt_vix(vix_v))
+    with c3:
+        st.metric("Fed Balance Sheet (WALCL)", _fmt_trillions_from_millions(walcl_v))
 
 st.subheader("News Watch")
 left, right = st.columns(2)
