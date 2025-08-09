@@ -4,5 +4,7 @@ requests==2.32.3
 python-dateutil==2.9.0.post0
 altair==5.3.0
 streamlit-autorefresh==1.0.1
+# openai==1.35.10   <- add later *after* first boot succeeds
+
 
 
