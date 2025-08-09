@@ -117,14 +117,75 @@ except Exception as e:
 st.divider()
 
 lcol, rcol = st.columns([1,2])
-with lcol:
-    st.subheader("Stablecoin Liquidity (Total)")
+# --------------------
+# Stablecoin Liquidity (Total) — resilient with fallback
+# --------------------
+st.subheader("Stablecoin Liquidity (Total)")
+
+@st.cache_data(ttl=3600)
+def _sc_get_json_with_backoff(url, params=None, tries=3):
+    import time, requests as rq
+    for i in range(tries):
+        r = rq.get(url, params=params, timeout=10)
+        if r.status_code == 429 and i < tries - 1:
+            time.sleep(1.5 * (2 ** i))  # 1.5s, 3s
+            continue
+        r.raise_for_status()
+        return r.json()
+    return None
+
+@st.cache_data(ttl=1800)
+def stablecoins_total_primary():
+    # DeFiLlama primary source
+    js = _sc_get_json_with_backoff("https://stablecoins.llama.fi/stablecoins")
+    total = js.get("total") if isinstance(js, dict) else None
+    return {"total": float(total) if total is not None else None, "source": "DeFiLlama", "raw": js}
+
+@st.cache_data(ttl=900)
+def stablecoins_total_fallback():
+    # CoinGecko fallback: USDT + USDC + DAI market caps via /simple/price
+    ids = "tether,usd-coin,dai"
+    js = _sc_get_json_with_backoff(
+        "https://api.coingecko.com/api/v3/simple/price",
+        params={"ids": ids, "vs_currencies": "usd", "include_market_cap": "true"},
+    )
+    def _cap(obj, key): 
+        try: return float(obj.get(key, {}).get("usd_market_cap"))
+        except Exception: return None
+    usdt = _cap(js, "tether"); usdc = _cap(js, "usd-coin"); dai = _cap(js, "dai")
+    caps = [v for v in [usdt, usdc, dai] if v is not None]
+    total = sum(caps) if caps else None
+    return {"total": total, "source": "CoinGecko (USDT+USDC+DAI)", "raw": js}
+
+def _fmt_usd_big(x):
+    if x is None: return "—"
     try:
-        stables = defillama_stables_total()
-        total = stables.get("total", None) if isinstance(stables, dict) else None
-        st.metric("Stablecoin Market Cap (approx)", fmt_billion(total) if total else "—")
-    except Exception as e:
-        st.error(f"Stablecoin API error: {e}")
+        if x >= 1e12: return f"${x/1e12:,.2f}T"
+        if x >= 1e9:  return f"${x/1e9:,.1f}B"
+        if x >= 1e6:  return f"${x/1e6:,.0f}M"
+        return f"${x:,.0f}"
+    except Exception:
+        return "—"
+
+try:
+    primary = stablecoins_total_primary()
+    total = primary["total"]
+    source = primary["source"]
+    raw = primary["raw"]
+    if total is None:
+        fb = stablecoins_total_fallback()
+        total, source, raw = fb["total"], fb["source"], fb["raw"]
+
+    st.metric("Stablecoin Market Cap (approx)", _fmt_usd_big(total))
+    st.caption(f"Source: {source}. Fallback uses CoinGecko USDT+USDC+DAI if primary fails.")
+
+    with st.expander("Debug (stablecoins)"):
+        st.write({"used_source": source, "total": total})
+        st.json(raw)
+except Exception as e:
+    st.error(f"Stablecoin fetch error: {e}")
+    st.caption("Both primary and fallback sources failed. Try Refresh or increase the auto-refresh interval.")
+
 
 with rcol:
     st.subheader("Solana TVL")
