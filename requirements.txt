@@ -4,3 +4,4 @@ pandas
 python-dateutil
 feedparser
 streamlit-autorefresh
+openai
