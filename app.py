@@ -33,8 +33,8 @@ from streamlit_autorefresh import st_autorefresh
 # ==============================
 # Flags & Keys
 # ==============================
-FRED_API_KEY   = os.getenv("FRED_API_KEY", "08f14b68a7f881c18fe9bf5de19d85bc")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
+FRED_API_KEY   = os.getenv("FRED_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ENABLE_GPT = bool(OPENAI_API_KEY)  # we’ll also check import availability later
 
 # ==============================
