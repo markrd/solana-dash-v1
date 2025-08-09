@@ -2,6 +2,6 @@ streamlit
 requests
 pandas
 python-dateutil
-feedparser
+altair
 streamlit-autorefresh
 openai
