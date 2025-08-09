@@ -1,15 +1,27 @@
-
 # -----------------------------
-# Solana Macro Dashboard (clean base)
+# Solana Macro Dashboard (clean restart)
 # -----------------------------
-# Notes:
-# - ChatGPT block is OPTIONAL (runs only if OPENAI_API_KEY is set).
-# - FRED is OPTIONAL (PMI & M2 will show info messages if key is missing).
-# - All external calls are cached + backoff; errors never crash the app.
-# - Keep requirements pinned to speed up builds.
+# Safe-start choices:
+# - Forces a local .streamlit dir to avoid '/.streamlit' permission errors.
+# - ChatGPT block only runs if OPENAI_API_KEY is set AND 'openai' is installed.
+# - FRED is optional (PMI & M2 show info if no key).
+# - Pinned deps + Python 3.11 via runtime.txt for stable builds.
 
 import os, time, json
+from pathlib import Path
 os.environ["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+
+# --- Ensure a writable config directory (fixes '/.streamlit' PermissionError) ---
+try:
+    Path(".streamlit").mkdir(exist_ok=True)
+    os.environ.setdefault("HOME", str(Path.cwd()))
+    os.environ.setdefault("STREAMLIT_GLOBAL_CONFIG_DIR", str(Path.cwd() / ".streamlit"))
+    os.environ.setdefault("STREAMLIT_CONFIG_DIR", str(Path.cwd() / ".streamlit"))
+    cfg = Path(".streamlit") / "config.toml"
+    if not cfg.exists():
+        cfg.write_text("browser.gatherUsageStats = false\n", encoding="utf-8")
+except Exception:
+    pass
 
 import requests
 import pandas as pd
@@ -21,9 +33,9 @@ from streamlit_autorefresh import st_autorefresh
 # ==============================
 # Flags & Keys
 # ==============================
-FRED_API_KEY   = os.getenv("FRED_API_KEY", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-ENABLE_GPT = bool(OPENAI_API_KEY)
+FRED_API_KEY   = os.getenv("FRED_API_KEY", "08f14b68a7f881c18fe9bf5de19d85bc")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
+ENABLE_GPT = bool(OPENAI_API_KEY)  # we’ll also check import availability later
 
 # ==============================
 # Page & minimal "Google-y" styling
@@ -106,7 +118,7 @@ def cg_market_caps_sum(ids=("tether","usd-coin","dai"), days=90):
         df = df[["date","cap"]]
         df.rename(columns={"cap": f"cap_{coin}"}, inplace=True)
         dfs.append(df)
-    if not dfs: 
+    if not dfs:
         return pd.DataFrame(columns=["date","total_cap"])
     out = dfs[0]
     for df in dfs[1:]:
@@ -233,7 +245,6 @@ with h4:
 st.markdown("### 🧠 Explain this dashboard")
 with st.expander("Generate a quick read (uses your OpenAI key if set)"):
     tone = st.selectbox("Tone", ["Concise bullets", "Narrative summary", "Risk-focused", "Beginner-friendly"], key="tone_top")
-
     if st.button("Generate commentary", key="gen_top"):
         try:
             # Snapshot
@@ -241,8 +252,7 @@ with st.expander("Generate a quick read (uses your OpenAI key if set)"):
             tvl_latest = None if tvl_df.empty else float(tvl_df.iloc[-1]["tvl"])
             tvl_30d = None
             if not tvl_df.empty and len(tvl_df) > 30:
-                base = float(tvl_df.iloc[-30]["tvl"])
-                last = float(tvl_df.iloc[-1]["tvl"])
+                base = float(tvl_df.iloc[-30]["tvl"]); last = float(tvl_df.iloc[-1]["tvl"])
                 tvl_30d = None if base == 0 else (last/base - 1)*100.0
 
             # Relative strength
@@ -277,11 +287,7 @@ with st.expander("Generate a quick read (uses your OpenAI key if set)"):
 
             snapshot = {
                 "timestamp_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                "prices": {
-                    "sol_usd": _to_num(sol.get("usd")),
-                    "eth_usd": _to_num(eth.get("usd")),
-                    "btc_usd": _to_num(btc.get("usd")),
-                },
+                "prices": {"sol_usd": _to_num(sol.get("usd")), "eth_usd": _to_num(eth.get("usd")), "btc_usd": _to_num(btc.get("usd"))},
                 "tvl": {"latest": _to_num(tvl_latest), "chg_30d_pct": _to_num(tvl_30d)},
                 "relative_strength": {"sol_eth_ratio_latest": _to_num(rs_latest), "vs_30d_avg_pct": _to_num(rel_30d)},
                 "macro": {"yield_curve_10y_minus_2y": _to_num(yc_spread), "vix": _to_num(vix_v)},
@@ -289,9 +295,10 @@ with st.expander("Generate a quick read (uses your OpenAI key if set)"):
             }
 
             if ENABLE_GPT:
-                from openai import OpenAI
-                client = OpenAI()
-                prompt = f"""
+                try:
+                    from openai import OpenAI  # only import if they actually clicked + key provided
+                    client = OpenAI()
+                    prompt = f"""
 You are a crypto markets analyst. Explain what the dashboard says about Solana and broader crypto.
 Keep it to 6–10 bullet points. If a metric is missing, skip it.
 
@@ -307,8 +314,11 @@ Guidelines:
 - Mention Bullishness score level and what would move it up/down next.
 - End with 2 watch-items for the coming week.
 """
-                resp = client.responses.create(model="gpt-4o-mini", input=prompt, max_output_tokens=300, temperature=0.3)
-                st.markdown(resp.output_text)
+                    resp = client.responses.create(model="gpt-4o-mini", input=prompt, max_output_tokens=300, temperature=0.3)
+                    st.markdown(resp.output_text)
+                except Exception as e:
+                    st.error(f"GPT call error: {e}")
+                    st.caption("Tip: add OPENAI_API_KEY in Secrets and (later) add openai==1.35.10 to requirements.")
             else:
                 st.info("No OPENAI_API_KEY set. Showing a lightweight local summary.")
                 lines = []
@@ -343,7 +353,7 @@ with left:
     if not pmi_ytd.empty:
         st.altair_chart(alt_line(pmi_ytd, "date", "value", pmi_label, 260), use_container_width=True)
     else:
-        st.info("No PMI/INDPRO data (check FRED key).")
+        st.info("No PMI/INDPRO data (add a FRED key to enable).")
 
     sol_hist = cg_market_chart("solana", days=370)
     sol_ytd = ytd_only(sol_hist, "date")
@@ -362,7 +372,7 @@ with right:
     if not m2_ytd.empty:
         st.altair_chart(alt_line(m2_ytd, "date", "value", "M2 (NSA)", 260), use_container_width=True)
     else:
-        st.info("No M2 data (check FRED key).")
+        st.info("No M2 data (add a FRED key).")
 
     for coin_id, label in [("ethereum","ETH"), ("bitcoin","BTC")]:
         hist = cg_market_chart(coin_id, days=370)
@@ -535,7 +545,7 @@ else:
 # Alerts
 st.subheader("Alerts")
 alerts = []
-def add_alert(ok, msg): 
+def add_alert(ok, msg):
     if ok: alerts.append(msg)
 
 add_alert(tvl_30d is not None and tvl_30d <= -10, f"Solana TVL 30d is {tvl_30d:.1f}% (≤ -10%).")
@@ -548,4 +558,6 @@ else:
     st.success("✅ No major risk flags right now.")
 
 st.caption("Tip: if you see 429 errors on CoinGecko, increase the auto-refresh interval.")
+
+
 
