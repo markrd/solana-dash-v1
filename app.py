@@ -6,9 +6,26 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from dateutil import parser as dateparser
+from streamlit_autorefresh import st_autorefresh
 import feedparser
 
 st.set_page_config(page_title="Solana Dashboard v1", layout="wide")
+# Auto-refresh controls
+with st.sidebar:
+    st.markdown("### Refresh")
+    auto = st.checkbox("Auto-refresh", value=False, help="Enable periodic refresh")
+    interval = st.slider("Interval (seconds)", 10, 120, 30, 5)
+    if not auto and st.button("🔄 Refresh now"):
+        st.cache_data.clear()
+        st.rerun()
+
+# Trigger refresh if enabled
+if 'auto_tick' not in st.session_state:
+    st.session_state['auto_tick'] = 0
+
+if auto:
+    st_autorefresh(interval=interval * 1000, key="auto_refresh_tick")
+
 
 FRED_API_KEY = os.getenv("FRED_API_KEY", "")
 
