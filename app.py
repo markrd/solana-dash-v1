@@ -154,50 +154,5 @@ except Exception as e:
 
 st.divider()
 
-# ---------------------------
-# Charts — 90-day prices
-# ---------------------------
-st.subheader("90-Day Price Charts")
-coin_map = {
-    "Solana (SOL)": "solana",
-    "Ethereum (ETH)": "ethereum",
-    "Bitcoin (BTC)": "bitcoin",
-}
-left, right = st.columns([1, 3])
 
-with left:
-    choice = st.radio("Select asset", list(coin_map.keys()), index=0)
-    st.caption("Data: CoinGecko /market_chart")
-
-with right:
-    cid = coin_map[choice]
-    try:
-        df = cg_market_chart(cid, days=90)
-        if df.empty:
-            st.info("No chart data (rate limited?). Try again later.")
-        else:
-            base = float(df.iloc[0]["price"])
-            df["pct_from_start"] = (df["price"] / base - 1) * 100.0
-
-            tab1, tab2 = st.tabs(["Price (USD)", "% from start"])
-            with tab1:
-                ch = alt.Chart(df).mark_line().encode(
-                    x=alt.X("date:T", title=""),
-                    y=alt.Y("price:Q", title="Price (USD)"),
-                    tooltip=[alt.Tooltip("date:T"), alt.Tooltip("price:Q", format=",.2f")],
-                ).properties(height=300)
-                st.altair_chart(ch, use_container_width=True)
-
-            with tab2:
-                ch2 = alt.Chart(df).mark_line().encode(
-                    x=alt.X("date:T", title=""),
-                    y=alt.Y("pct_from_start:Q", title="% since first point"),
-                    tooltip=[alt.Tooltip("date:T"), alt.Tooltip("pct_from_start:Q", format=".2f")],
-                ).properties(height=300)
-                st.altair_chart(ch2, use_container_width=True)
-    except Exception as e:
-        st.error(f"Chart error: {e}")
-
-st.divider()
-st.write("✅ Charts added. Next we can layer in Solana TVL (DeFiLlama), stablecoin liquidity, and macro (FRED) once you confirm this renders.")
 
