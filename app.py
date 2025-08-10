@@ -6,6 +6,71 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 from datetime import datetime, timezone, timedelta
+# ---------- Modern UI pack (paste near top of app.py) ----------
+MODERN_STYLE = """
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0b0f19; --bg2:#0f1322; --card:#0f1322; --text:#eaf0f6; --muted:#9aa3ab; --border:rgba(255,255,255,.065);
+  --accent:#22d3ee; --accent-2:#93c5fd; --up:#2dd4bf; --down:#fb7185;
+}
+html,body,[class^="css"]{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial,"Noto Sans","Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol";}
+
+.block-container{padding-top: 1rem; max-width: 1200px;}
+/* Cards */
+.card{background:var(--card); border:1px solid var(--border); border-radius:16px; padding:16px 18px;}
+.card + .card{margin-top: 10px;}
+.kpi{display:flex; flex-direction:column; gap:6px;}
+.kpi .label{color:var(--muted); font-size:.85rem;}
+.kpi .value{font-weight:700; font-size:1.75rem; line-height:1.1}
+.kpi .sub{color:var(--muted); font-size:.85rem;}
+.kpi .delta.up{color:var(--up); font-weight:600}
+.kpi .delta.down{color:var(--down); font-weight:600}
+
+/* Pills & chips */
+.pills{display:flex; gap:8px; flex-wrap: wrap;}
+.pill{background:transparent; border:1px solid var(--border); color:var(--text); padding:6px 10px; border-radius:999px; font-size:.85rem}
+.pill.active{background: rgba(34,211,238,.12); border-color: var(--accent);}
+
+/* Section header */
+.sec{display:flex; justify-content:space-between; align-items:center; margin:6px 0 10px}
+.sec h3{margin:0; font-size:1.1rem}
+.sec .hint{color:var(--muted); font-size:.9rem}
+
+/* Hero */
+.hero{display:flex; align-items:flex-end; justify-content:space-between; gap:10px; margin-bottom: 10px}
+.hero h1{margin:0; font-size:2.1rem}
+.badge{display:inline-block; margin-left:8px; background:rgba(34,211,238,.12); border:1px solid var(--accent);
+  color:var(--accent); padding:2px 8px; border-radius:999px; font-size:.85rem}
+
+/* Make charts feel integrated */
+.vega-embed, .element-container:has(canvas){background:var(--card); border:1px solid var(--border); border-radius:16px; padding:8px}
+</style>
+"""
+
+def ui_hero(title:str, subtitle:str="", badge:str=""):
+    b = f'<span class="badge">{badge}</span>' if badge else ""
+    return f'''<div class="hero"><div>
+        <h1>{title} {b}</h1>
+        <div class="hint">{subtitle}</div>
+    </div></div>'''
+
+def ui_kpi(label:str, value:str, sub:str="", delta:float|None=None):
+    d_html=""
+    if delta is not None:
+        cls = "up" if delta>=0 else "down"
+        d_html = f'<span class="delta {cls}">{delta:+.2f}%</span>'
+    return f'''
+    <div class="card kpi">
+      <div class="label">{label}</div>
+      <div class="value">{value}</div>
+      <div class="sub">{d_html} {sub}</div>
+    </div>'''
+
+def ui_section(title:str, right_hint:str=""):
+    return f'''<div class="sec"><h3>{title}</h3><div class="hint">{right_hint}</div></div>'''
+# ---------- /Modern UI pack ----------
 
 # --- Ensure Streamlit can write configs (avoids '/.streamlit' issues) ---
 try:
@@ -17,6 +82,7 @@ except Exception:
     pass
 
 st.set_page_config(page_title="Solana Dashboard — v2.2.1 (fast)", layout="wide")
+st.markdown(MODERN_STYLE, unsafe_allow_html=True)
 
 # ---------------------------------
 # Global HTTP helper (cached + fast-fail backoff)
