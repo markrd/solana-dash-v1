@@ -1,12 +1,13 @@
 import os, time
 from pathlib import Path
+from typing import Optional, Tuple
 import requests
 import streamlit as st
 import pandas as pd
 import altair as alt
 from datetime import datetime, timezone, timedelta
 
-# Ensure Streamlit can write configs (avoids '/.streamlit' issues on some hosts)
+# --- Ensure Streamlit can write configs (avoids '/.streamlit' issues) ---
 try:
     Path(".streamlit").mkdir(exist_ok=True)
     os.environ.setdefault("HOME", str(Path.cwd()))
@@ -15,67 +16,78 @@ try:
 except Exception:
     pass
 
-st.set_page_config(page_title="Solana Mini Dashboard", layout="wide")
+st.set_page_config(page_title="Solana Dashboard — v2.1", layout="wide")
 
-# ---------------------------
-# Small HTTP helper (cached + backoff)
-# ---------------------------
+# ---------------------------------
+# Global HTTP helper (cached+backoff)
+# ---------------------------------
+DEFAULT_HEADERS = {"User-Agent": "solana-dash/1.0 (+https://streamlit.app)"}
+
 @st.cache_data(ttl=600)
-def http_json(url, params=None, tries=3, timeout=12):
+def http_json(url: str, params=None, tries: int = 3, timeout: int = 12):
+    last = None
     for i in range(tries):
-        r = requests.get(url, params=params, timeout=timeout)
-        # Simple backoff on 429 / 5xx
+        r = requests.get(url, params=params, headers=DEFAULT_HEADERS, timeout=timeout)
         if (r.status_code == 429 or 500 <= r.status_code < 600) and i < tries - 1:
             time.sleep(1.5 * (2 ** i))
+            last = f"{r.status_code} {r.text[:200]}"
             continue
         r.raise_for_status()
-        return r.json()
-    return None
+        try:
+            return r.json()
+        except Exception:
+            return None
+    # If we exhausted retries, raise something readable:
+    raise requests.HTTPError(f"GET {url} failed after {tries} tries. Last: {last}")
 
 # ---------------------------
-# CoinGecko helpers (prices + history)
+# CoinGecko helpers
 # ---------------------------
 @st.cache_data(ttl=60)
 def cg_simple_prices(ids_csv: str):
-    js = http_json(
-        "https://api.coingecko.com/api/v3/simple/price",
-        params={
-            "ids": ids_csv,
-            "vs_currencies": "usd",
-            "include_24hr_change": "true",
-        },
-    )
-    return js or {}
+    try:
+        js = http_json(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": ids_csv, "vs_currencies": "usd", "include_24hr_change": "true"},
+        )
+        return js or {}
+    except Exception:
+        return {}
 
 @st.cache_data(ttl=600)
 def cg_market_chart(coin_id: str, days: int = 90, vs="usd") -> pd.DataFrame:
-    """Returns DataFrame with date, price for coin_id over N days."""
-    js = http_json(
-        f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
-        params={"vs_currency": vs, "days": days},
-    )
+    try:
+        js = http_json(
+            f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
+            params={"vs_currency": vs, "days": days},
+        )
+    except Exception:
+        return pd.DataFrame(columns=["date", "price"])
     prices = (js or {}).get("prices", [])
     if not prices:
         return pd.DataFrame(columns=["date", "price"])
     df = pd.DataFrame(prices, columns=["ts", "price"])
-    df["date"] = pd.to_datetime(df["ts"], unit="ms")
+    df["date"] = pd.to_datetime(df["ts"], unit="ms", errors="coerce")
+    df = df.dropna(subset=["date"])
     return df[["date", "price"]]
 
 @st.cache_data(ttl=1800)
 def cg_market_caps_sum(ids=("tether", "usd-coin", "dai"), days=180) -> pd.DataFrame:
-    """Sum market_caps for stablecoins to approximate global stablecoin liquidity."""
     out = None
     for coin in ids:
-        js = http_json(
-            f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart",
-            params={"vs_currency": "usd", "days": days},
-        )
+        try:
+            js = http_json(
+                f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart",
+                params={"vs_currency": "usd", "days": days},
+            )
+        except Exception:
+            continue
         caps = (js or {}).get("market_caps", [])
         if not caps:
             continue
         df = pd.DataFrame(caps, columns=["ts", f"cap_{coin}"])
-        df["date"] = pd.to_datetime(df["ts"], unit="ms")
-        df = df[["date", f"cap_{coin}"]]
+        df["date"] = pd.to_datetime(df["ts"], unit="ms", errors="coerce")
+        df = df.dropna(subset=["date"])[["date", f"cap_{coin}"]]
         out = df if out is None else pd.merge_asof(
             out.sort_values("date"),
             df.sort_values("date"),
@@ -86,34 +98,61 @@ def cg_market_caps_sum(ids=("tether", "usd-coin", "dai"), days=180) -> pd.DataFr
     if out is None:
         return pd.DataFrame(columns=["date", "total_cap"])
     out["total_cap"] = out.drop(columns=["date"]).sum(axis=1, min_count=1)
-    return out[["date", "total_cap"]].dropna()
+    out = out[["date", "total_cap"]].dropna()
+    return out
 
 # ---------------------------
-# DeFiLlama helpers (TVL + stablecoin total)
+# DeFiLlama helpers
 # ---------------------------
 @st.cache_data(ttl=1200)
 def llama_solana_tvl() -> pd.DataFrame:
-    js = http_json("https://api.llama.fi/v2/historicalChainTvl/Solana")
+    try:
+        js = http_json("https://api.llama.fi/v2/historicalChainTvl/Solana")
+    except Exception:
+        return pd.DataFrame(columns=["date", "tvl"])
     if not js:
         return pd.DataFrame(columns=["date", "tvl"])
     df = pd.DataFrame(js)
-    df["date"] = pd.to_datetime(df["date"], unit="s")
+    if "date" not in df or "tvl" not in df:
+        return pd.DataFrame(columns=["date", "tvl"])
+    df["date"] = pd.to_datetime(df["date"], unit="s", errors="coerce")
+    df = df.dropna(subset=["date"])
     return df[["date", "tvl"]]
 
 @st.cache_data(ttl=1200)
-def defillama_stablecoins_total():
-    """Returns (total_float, raw_json)."""
-    js = http_json("https://stablecoins.llama.fi/stablecoins")
-    total = js.get("total") if isinstance(js, dict) else None
-    return (float(total) if total is not None else None), js
+def defillama_stablecoins_total() -> Tuple[Optional[float], dict]:
+    """
+    Attempts multiple shapes seen in the wild:
+    - { total: <num> }
+    - { totalCirculatingUSD: <num> }
+    - { totalCirculating: <num> }
+    Falls back to None if not found.
+    """
+    try:
+        js = http_json("https://stablecoins.llama.fi/stablecoins")
+    except Exception:
+        return None, {}
+    total = None
+    if isinstance(js, dict):
+        for key in ("total", "totalCirculatingUSD", "totalCirculating"):
+            val = js.get(key)
+            if isinstance(val, (int, float)):
+                total = float(val)
+                break
+    return total, (js or {})
 
 @st.cache_data(ttl=600)
-def cg_stablecoins_total_fallback():
-    """Fallback single number using CoinGecko simple/price market_caps."""
-    js = http_json(
-        "https://api.coingecko.com/api/v3/simple/price",
-        params={"ids": "tether,usd-coin,dai", "vs_currencies": "usd", "include_market_cap": "true"},
-    )
+def cg_stablecoins_total_fallback() -> Tuple[Optional[float], dict]:
+    """
+    Fallback: sum USDT+USDC+DAI market caps from simple/price.
+    """
+    try:
+        js = http_json(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": "tether,usd-coin,dai", "vs_currencies": "usd", "include_market_cap": "true"},
+        )
+    except Exception:
+        return None, {}
     def _cap(name):
         try:
             return float(js.get(name, {}).get("usd_market_cap"))
@@ -121,7 +160,7 @@ def cg_stablecoins_total_fallback():
             return None
     parts = [_cap("tether"), _cap("usd-coin"), _cap("dai")]
     parts = [p for p in parts if p is not None]
-    return (sum(parts) if parts else None), js
+    return (sum(parts) if parts else None), (js or {})
 
 # ---------------------------
 # Utilities
@@ -148,7 +187,6 @@ def usd_big(x):
         return "—"
 
 def pct_change_over_days(df: pd.DataFrame, value_col: str, days: int = 30):
-    """% change from first point inside the trailing N days window to the latest."""
     if df is None or df.empty or value_col not in df.columns:
         return None
     df = df[["date", value_col]].dropna()
@@ -172,12 +210,13 @@ def line_chart(df, x, y, y_title, height=280):
     ).properties(height=height)
 
 # ---------------------------
-# Sidebar: refresh
+# Sidebar
 # ---------------------------
 with st.sidebar:
     st.header("Refresh")
     auto = st.checkbox("Auto-refresh", value=False)
     interval = st.slider("Interval (sec)", 15, 180, 60, 5)
+    debug = st.toggle("Debug mode", value=False, help="Show raw API shapes and DataFrame sizes")
     if st.button("Refresh now"):
         st.cache_data.clear()
         st.rerun()
@@ -190,7 +229,7 @@ if auto:
 # ---------------------------
 # Header + Price tiles
 # ---------------------------
-st.title("Solana Dashboard — v2")
+st.title("Solana Dashboard — v2.1")
 st.caption(f"Local time (UTC+4): {datetime.now(timezone(timedelta(hours=4))).strftime('%Y-%m-%d %H:%M:%S')}")
 
 try:
@@ -209,11 +248,7 @@ st.divider()
 # Charts — 90-day prices
 # ---------------------------
 st.subheader("90-Day Price Charts")
-coin_map = {
-    "Solana (SOL)": "solana",
-    "Ethereum (ETH)": "ethereum",
-    "Bitcoin (BTC)": "bitcoin",
-}
+coin_map = {"Solana (SOL)": "solana", "Ethereum (ETH)": "ethereum", "Bitcoin (BTC)": "bitcoin"}
 left, right = st.columns([1, 3])
 
 with left:
@@ -224,37 +259,34 @@ with right:
     cid = coin_map[choice]
     try:
         df = cg_market_chart(cid, days=90)
+        if debug: st.info(f"{cid} chart df shape: {df.shape}")
         if df.empty:
             st.info("No chart data (rate limited?). Try again later.")
         else:
             base = float(df.iloc[0]["price"])
             df["pct_from_start"] = (df["price"] / base - 1) * 100.0
-
             tab1, tab2 = st.tabs(["Price (USD)", "% from start"])
             with tab1:
-                ch = line_chart(df, "date", "price", "Price (USD)", 300)
-                st.altair_chart(ch, use_container_width=True)
+                st.altair_chart(line_chart(df, "date", "price", "Price (USD)", 300), use_container_width=True)
             with tab2:
-                ch2 = line_chart(df, "date", "pct_from_start", "% since first point", 300)
-                st.altair_chart(ch2, use_container_width=True)
+                st.altair_chart(line_chart(df, "date", "pct_from_start", "% since first point", 300), use_container_width=True)
     except Exception as e:
         st.error(f"Chart error: {e}")
 
 st.divider()
 
 # ---------------------------
-# NEW: On-chain Liquidity & TVL
+# On-chain Liquidity & TVL
 # ---------------------------
 st.subheader("On-chain Liquidity & TVL")
 
-# Left column shows metrics; right column shows charts
 mcol, gcol = st.columns([1, 2])
 
-# --- Metrics (with 30d deltas)
 with mcol:
-    # Solana TVL (latest + 30d change)
+    # Solana TVL
     try:
         tvl_df = llama_solana_tvl()
+        if debug: st.info(f"TVL df shape: {tvl_df.shape}")
         if tvl_df.empty:
             st.info("TVL unavailable right now.")
         else:
@@ -264,29 +296,31 @@ with mcol:
     except Exception as e:
         st.error(f"TVL error: {e}")
 
-    # Global stablecoin liquidity (best available) + 30d change
+    # Stablecoins (metric + delta)
     try:
-        # Try DeFiLlama point-in-time total first
         total_dl, raw_dl = defillama_stablecoins_total()
-        # For the chart & 30d delta series, use CoinGecko summed caps (USDT+USDC+DAI)
         sc_df = cg_market_caps_sum(days=180)
+        if debug:
+            st.info(f"Stablecoin df shape: {sc_df.shape}")
+            with st.expander("Raw DeFiLlama stablecoins JSON (first 800 chars)"):
+                st.code(str(raw_dl)[:800])
         sc_delta = pct_change_over_days(sc_df.rename(columns={"total_cap": "value"}), "value", 30) if not sc_df.empty else None
 
         used_source = "DeFiLlama total"
         total_display = total_dl
-
-        # If DeFiLlama total is missing, fallback to CoinGecko one-shot
         if total_display is None:
-            total_cg, _raw_cg = cg_stablecoins_total_fallback()
+            total_cg, raw_cg = cg_stablecoins_total_fallback()
             total_display = total_cg
             used_source = "CoinGecko (USDT+USDC+DAI)"
+            if debug:
+                with st.expander("Raw CoinGecko fallback JSON (first 400 chars)"):
+                    st.code(str(raw_cg)[:400])
 
         st.metric("Stablecoin Liquidity (approx.)", usd_big(total_display), pct(sc_delta) if sc_delta is not None else None)
         st.caption(f"Source: {used_source}. Chart uses USDT+USDC+DAI sum as a liquidity proxy.")
     except Exception as e:
         st.error(f"Stablecoin liquidity error: {e}")
 
-# --- Charts
 with gcol:
     tabs = st.tabs(["Solana TVL (365d)", "Stablecoin Liquidity (180d)"])
     with tabs[0]:
@@ -295,21 +329,19 @@ with gcol:
             if tvl_df.empty:
                 st.info("No TVL history to display.")
             else:
-                ch_tvl = line_chart(tvl_df, "date", "tvl", "Solana TVL (USD)", 320)
-                st.altair_chart(ch_tvl, use_container_width=True)
+                st.altair_chart(line_chart(tvl_df, "date", "tvl", "Solana TVL (USD)", 320), use_container_width=True)
         except Exception as e:
             st.error(f"TVL chart error: {e}")
-
     with tabs[1]:
         try:
             sc_df = cg_market_caps_sum(days=180)
             if sc_df.empty:
                 st.info("No stablecoin history (rate limited?).")
             else:
-                ch_sc = line_chart(sc_df, "date", "total_cap", "USDT+USDC+DAI Market Cap (USD)", 320)
-                st.altair_chart(ch_sc, use_container_width=True)
+                st.altair_chart(line_chart(sc_df, "date", "total_cap", "USDT+USDC+DAI Market Cap (USD)", 320), use_container_width=True)
         except Exception as e:
             st.error(f"Stablecoin chart error: {e}")
 
 st.caption("Tip: if you see 429 errors from CoinGecko, slow the refresh interval or try again later.")
+
 
