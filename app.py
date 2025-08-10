@@ -16,7 +16,7 @@ try:
 except Exception:
     pass
 
-st.set_page_config(page_title="Solana Dashboard — v2.1", layout="wide")
+st.set_page_config(page_title="Solana Dashboard — v2.2", layout="wide")
 
 # ---------------------------------
 # Global HTTP helper (cached+backoff)
@@ -37,7 +37,6 @@ def http_json(url: str, params=None, tries: int = 3, timeout: int = 12):
             return r.json()
         except Exception:
             return None
-    # If we exhausted retries, raise something readable:
     raise requests.HTTPError(f"GET {url} failed after {tries} tries. Last: {last}")
 
 # ---------------------------
@@ -121,13 +120,6 @@ def llama_solana_tvl() -> pd.DataFrame:
 
 @st.cache_data(ttl=1200)
 def defillama_stablecoins_total() -> Tuple[Optional[float], dict]:
-    """
-    Attempts multiple shapes seen in the wild:
-    - { total: <num> }
-    - { totalCirculatingUSD: <num> }
-    - { totalCirculating: <num> }
-    Falls back to None if not found.
-    """
     try:
         js = http_json("https://stablecoins.llama.fi/stablecoins")
     except Exception:
@@ -143,9 +135,6 @@ def defillama_stablecoins_total() -> Tuple[Optional[float], dict]:
 
 @st.cache_data(ttl=600)
 def cg_stablecoins_total_fallback() -> Tuple[Optional[float], dict]:
-    """
-    Fallback: sum USDT+USDC+DAI market caps from simple/price.
-    """
     try:
         js = http_json(
             "https://api.coingecko.com/api/v3/simple/price",
@@ -229,7 +218,7 @@ if auto:
 # ---------------------------
 # Header + Price tiles
 # ---------------------------
-st.title("Solana Dashboard — v2.1")
+st.title("Solana Dashboard — v2.2")
 st.caption(f"Local time (UTC+4): {datetime.now(timezone(timedelta(hours=4))).strftime('%Y-%m-%d %H:%M:%S')}")
 
 try:
@@ -342,6 +331,127 @@ with gcol:
         except Exception as e:
             st.error(f"Stablecoin chart error: {e}")
 
+st.divider()
+
+# ---------------------------
+# NEW: SOL vs ETH — Relative Strength (365d)
+# ---------------------------
+st.subheader("SOL vs ETH — Relative Strength")
+
+def sol_eth_ratio(days=365) -> pd.DataFrame:
+    sol = cg_market_chart("solana", days=days)
+    eth = cg_market_chart("ethereum", days=days)
+    if sol.empty or eth.empty:
+        return pd.DataFrame(columns=["date","sol_eth_ratio"])
+    merged = pd.merge_asof(
+        sol.sort_values("date"),
+        eth.sort_values("date"),
+        on="date",
+        direction="nearest",
+        tolerance=pd.Timedelta("1H"),
+        suffixes=("_sol","_eth")
+    ).dropna()
+    merged["sol_eth_ratio"] = merged["price_sol"] / merged["price_eth"]
+    return merged[["date","sol_eth_ratio"]]
+
+try:
+    rs = sol_eth_ratio(365)
+    if debug: st.info(f"SOL/ETH ratio df shape: {rs.shape}")
+    if rs.empty:
+        st.info("No ratio data (rate limited?).")
+    else:
+        ch = line_chart(rs, "date", "sol_eth_ratio", "SOL/ETH", 320)
+        st.altair_chart(ch, use_container_width=True)
+        latest = float(rs.iloc[-1]["sol_eth_ratio"])
+        ma30 = float(rs["sol_eth_ratio"].tail(30).mean())
+        st.caption(f"Latest ratio: {latest:.4f} | 30-day avg: {ma30:.4f}")
+except Exception as e:
+    st.error(f"SOL/ETH ratio error: {e}")
+
+st.divider()
+
+# ---------------------------
+# NEW: 30-Day Signals + Bullishness + Alerts
+# ---------------------------
+st.subheader("30-Day Trend Signals")
+
+def pct_to_score(pct, pos=20.0, neg=-20.0):
+    if pct is None: return None
+    denom = pos if pct >= 0 else abs(neg)
+    score = 50 + (pct/denom)*50
+    return max(0, min(100, score))
+
+# TVL 30d
+try:
+    tvl_30d = pct_change_over_days(llama_solana_tvl().rename(columns={"tvl":"value"}), "value", 30)
+except Exception:
+    tvl_30d = None
+
+# Stablecoins 30d
+try:
+    sc_df = cg_market_caps_sum(days=90)
+    stable_30d = pct_change_over_days(sc_df.rename(columns={"total_cap":"value"}), "value", 30)
+except Exception:
+    stable_30d = None
+
+# SOL/ETH vs 30d avg → % deviation
+rel_30d = None
+try:
+    rs = sol_eth_ratio(60)
+    if not rs.empty:
+        latest_ratio = float(rs.iloc[-1]["sol_eth_ratio"])
+        ma30 = float(rs["sol_eth_ratio"].tail(30).mean())
+        if ma30 != 0:
+            rel_30d = (latest_ratio/ma30 - 1) * 100.0
+except Exception:
+    pass
+
+c1, c2, c3 = st.columns(3)
+with c1: st.metric("TVL 30d", "—" if tvl_30d is None else f"{tvl_30d:.1f}%")
+with c2: st.metric("Stablecoins 30d", "—" if stable_30d is None else f"{stable_30d:.1f}%")
+with c3: st.metric("SOL/ETH vs 30d avg", "—" if rel_30d is None else f"{rel_30d:.1f}%")
+
+st.subheader("Bullishness Score")
+score_tvl     = pct_to_score(tvl_30d)
+score_stables = pct_to_score(stable_30d)
+score_rel     = pct_to_score(rel_30d, 15.0, -15.0)  # tighter band for ratio
+
+weights = {"tvl": 0.40, "stables": 0.35, "rel": 0.25}
+num = sum(s*w for s, w in [(score_tvl, weights["tvl"]), (score_stables, weights["stables"]), (score_rel, weights["rel"])] if s is not None)
+den = sum(w for s, w in [(score_tvl, weights["tvl"]), (score_stables, weights["stables"]), (score_rel, weights["rel"])] if s is not None)
+score = (num/den) if den > 0 else None
+
+prev = st.session_state.get("last_bull_score")
+if score is None:
+    st.info("Not enough data yet to compute a score.")
+else:
+    delta = None if prev is None else score - prev
+    st.session_state["last_bull_score"] = score
+    light = "🟢" if score >= 70 else ("🟠" if score >= 40 else "🔴")
+    x1, x2 = st.columns([1,1])
+    with x1:
+        st.markdown(f"### {score:.0f} / 100")
+        if delta is not None:
+            st.caption(f"Δ since last view: {delta:+.0f}")
+    with x2:
+        st.markdown(f"### Signal: {light}")
+
+# Alerts
+st.subheader("Alerts")
+alerts = []
+def add_alert(ok, msg):
+    if ok: alerts.append(msg)
+
+add_alert(tvl_30d is not None and tvl_30d <= -10, f"Solana TVL 30d is {tvl_30d:.1f}% (≤ -10%).")
+add_alert(stable_30d is not None and stable_30d <= -10, f"Stablecoin cap proxy 30d is {stable_30d:.1f}% (≤ -10%).")
+add_alert(rel_30d is not None and rel_30d <= -5, f"SOL/ETH vs 30d avg is {rel_30d:.1f}% (≤ -5%).")
+
+if alerts:
+    st.warning("⚠️ Risk flags:\n\n- " + "\n- ".join(alerts))
+else:
+    st.success("✅ No major risk flags right now.")
+
 st.caption("Tip: if you see 429 errors from CoinGecko, slow the refresh interval or try again later.")
+
 
 
