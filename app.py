@@ -16,20 +16,22 @@ try:
 except Exception:
     pass
 
-st.set_page_config(page_title="Solana Dashboard — v2.2", layout="wide")
+st.set_page_config(page_title="Solana Dashboard — v2.2.1 (fast)", layout="wide")
 
 # ---------------------------------
-# Global HTTP helper (cached+backoff)
+# Global HTTP helper (cached + fast-fail backoff)
 # ---------------------------------
-DEFAULT_HEADERS = {"User-Agent": "solana-dash/1.0 (+https://streamlit.app)"}
+DEFAULT_HEADERS = {"User-Agent": "solana-dash/1.0 (+streamlit)"}
+HTTP_TIMEOUT = 6     # ↓ from 12
+HTTP_TRIES   = 2     # ↓ from 3
 
 @st.cache_data(ttl=600)
-def http_json(url: str, params=None, tries: int = 3, timeout: int = 12):
+def http_json(url: str, params=None, tries: int = HTTP_TRIES, timeout: int = HTTP_TIMEOUT):
     last = None
     for i in range(tries):
         r = requests.get(url, params=params, headers=DEFAULT_HEADERS, timeout=timeout)
         if (r.status_code == 429 or 500 <= r.status_code < 600) and i < tries - 1:
-            time.sleep(1.5 * (2 ** i))
+            time.sleep(1.2 * (2 ** i))
             last = f"{r.status_code} {r.text[:200]}"
             continue
         r.raise_for_status()
@@ -70,7 +72,7 @@ def cg_market_chart(coin_id: str, days: int = 90, vs="usd") -> pd.DataFrame:
     df = df.dropna(subset=["date"])
     return df[["date", "price"]]
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=900)
 def cg_market_caps_sum(ids=("tether", "usd-coin", "dai"), days=180) -> pd.DataFrame:
     out = None
     for coin in ids:
@@ -103,7 +105,7 @@ def cg_market_caps_sum(ids=("tether", "usd-coin", "dai"), days=180) -> pd.DataFr
 # ---------------------------
 # DeFiLlama helpers
 # ---------------------------
-@st.cache_data(ttl=1200)
+@st.cache_data(ttl=900)
 def llama_solana_tvl() -> pd.DataFrame:
     try:
         js = http_json("https://api.llama.fi/v2/historicalChainTvl/Solana")
@@ -118,7 +120,7 @@ def llama_solana_tvl() -> pd.DataFrame:
     df = df.dropna(subset=["date"])
     return df[["date", "tvl"]]
 
-@st.cache_data(ttl=1200)
+@st.cache_data(ttl=900)
 def defillama_stablecoins_total() -> Tuple[Optional[float], dict]:
     try:
         js = http_json("https://stablecoins.llama.fi/stablecoins")
@@ -202,10 +204,11 @@ def line_chart(df, x, y, y_title, height=280):
 # Sidebar
 # ---------------------------
 with st.sidebar:
-    st.header("Refresh")
+    st.header("Controls")
     auto = st.checkbox("Auto-refresh", value=False)
     interval = st.slider("Interval (sec)", 15, 180, 60, 5)
-    debug = st.toggle("Debug mode", value=False, help="Show raw API shapes and DataFrame sizes")
+    fast_mode = st.toggle("Fast mode (recommended)", value=True, help="Load heavy data only when toggled OFF.")
+    debug = st.toggle("Debug", value=False, help="Show raw API shapes and DataFrame sizes")
     if st.button("Refresh now"):
         st.cache_data.clear()
         st.rerun()
@@ -218,18 +221,16 @@ if auto:
 # ---------------------------
 # Header + Price tiles
 # ---------------------------
-st.title("Solana Dashboard — v2.2")
+st.title("Solana Dashboard — v2.2.1 (fast)")
 st.caption(f"Local time (UTC+4): {datetime.now(timezone(timedelta(hours=4))).strftime('%Y-%m-%d %H:%M:%S')}")
 
-try:
+with st.spinner("Loading prices…"):
     data = cg_simple_prices("solana,ethereum,bitcoin")
-    sol, eth, btc = data.get("solana", {}), data.get("ethereum", {}), data.get("bitcoin", {})
-    c1, c2, c3 = st.columns(3)
-    with c1: st.metric("SOL (USD)", sol.get("usd", "—"), pct(sol.get("usd_24h_change", 0)))
-    with c2: st.metric("ETH (USD)", eth.get("usd", "—"), pct(eth.get("usd_24h_change", 0)))
-    with c3: st.metric("BTC (USD)", btc.get("usd", "—"), pct(btc.get("usd_24h_change", 0)))
-except Exception as e:
-    st.error(f"Price fetch failed: {e}")
+sol, eth, btc = data.get("solana", {}), data.get("ethereum", {}), data.get("bitcoin", {})
+c1, c2, c3 = st.columns(3)
+with c1: st.metric("SOL (USD)", sol.get("usd", "—"), pct(sol.get("usd_24h_change", 0)))
+with c2: st.metric("ETH (USD)", eth.get("usd", "—"), pct(eth.get("usd_24h_change", 0)))
+with c3: st.metric("BTC (USD)", btc.get("usd", "—"), pct(btc.get("usd_24h_change", 0)))
 
 st.divider()
 
@@ -246,35 +247,35 @@ with left:
 
 with right:
     cid = coin_map[choice]
-    try:
+    with st.spinner(f"Loading {cid.upper()} chart…"):
         df = cg_market_chart(cid, days=90)
-        if debug: st.info(f"{cid} chart df shape: {df.shape}")
-        if df.empty:
-            st.info("No chart data (rate limited?). Try again later.")
-        else:
-            base = float(df.iloc[0]["price"])
-            df["pct_from_start"] = (df["price"] / base - 1) * 100.0
-            tab1, tab2 = st.tabs(["Price (USD)", "% from start"])
-            with tab1:
-                st.altair_chart(line_chart(df, "date", "price", "Price (USD)", 300), use_container_width=True)
-            with tab2:
-                st.altair_chart(line_chart(df, "date", "pct_from_start", "% since first point", 300), use_container_width=True)
-    except Exception as e:
-        st.error(f"Chart error: {e}")
+    if debug: st.info(f"{cid} chart df shape: {df.shape}")
+    if df.empty:
+        st.info("No chart data (rate limited?). Try again later.")
+    else:
+        base = float(df.iloc[0]["price"])
+        df["pct_from_start"] = (df["price"] / base - 1) * 100.0
+        tab1, tab2 = st.tabs(["Price (USD)", "% from start"])
+        with tab1:
+            st.altair_chart(line_chart(df, "date", "price", "Price (USD)", 300), use_container_width=True)
+        with tab2:
+            st.altair_chart(line_chart(df, "date", "pct_from_start", "% since first point", 300), use_container_width=True)
 
 st.divider()
 
 # ---------------------------
-# On-chain Liquidity & TVL
+# On-chain Liquidity & TVL (deferred if Fast mode)
 # ---------------------------
 st.subheader("On-chain Liquidity & TVL")
+if fast_mode:
+    st.info("Fast mode is ON — skipping heavy data to keep the app snappy. Toggle it OFF to load TVL and Stablecoins.")
+else:
+    mcol, gcol = st.columns([1, 2])
 
-mcol, gcol = st.columns([1, 2])
-
-with mcol:
-    # Solana TVL
-    try:
-        tvl_df = llama_solana_tvl()
+    with mcol:
+        # Solana TVL
+        with st.spinner("Loading Solana TVL…"):
+            tvl_df = llama_solana_tvl()
         if debug: st.info(f"TVL df shape: {tvl_df.shape}")
         if tvl_df.empty:
             st.info("TVL unavailable right now.")
@@ -282,19 +283,17 @@ with mcol:
             tvl_30d = pct_change_over_days(tvl_df.rename(columns={"tvl": "value"}), "value", 30)
             latest_tvl = float(tvl_df.iloc[-1]["tvl"])
             st.metric("Solana TVL (latest)", f"${latest_tvl:,.0f}", pct(tvl_30d) if tvl_30d is not None else None)
-    except Exception as e:
-        st.error(f"TVL error: {e}")
 
-    # Stablecoins (metric + delta)
-    try:
-        total_dl, raw_dl = defillama_stablecoins_total()
-        sc_df = cg_market_caps_sum(days=180)
+        # Stablecoins (metric + delta)
+        with st.spinner("Loading Stablecoin liquidity…"):
+            total_dl, raw_dl = defillama_stablecoins_total()
+            sc_df = cg_market_caps_sum(days=180)
         if debug:
             st.info(f"Stablecoin df shape: {sc_df.shape}")
             with st.expander("Raw DeFiLlama stablecoins JSON (first 800 chars)"):
                 st.code(str(raw_dl)[:800])
-        sc_delta = pct_change_over_days(sc_df.rename(columns={"total_cap": "value"}), "value", 30) if not sc_df.empty else None
 
+        sc_delta = pct_change_over_days(sc_df.rename(columns={"total_cap": "value"}), "value", 30) if not sc_df.empty else None
         used_source = "DeFiLlama total"
         total_display = total_dl
         if total_display is None:
@@ -307,151 +306,58 @@ with mcol:
 
         st.metric("Stablecoin Liquidity (approx.)", usd_big(total_display), pct(sc_delta) if sc_delta is not None else None)
         st.caption(f"Source: {used_source}. Chart uses USDT+USDC+DAI sum as a liquidity proxy.")
-    except Exception as e:
-        st.error(f"Stablecoin liquidity error: {e}")
 
-with gcol:
-    tabs = st.tabs(["Solana TVL (365d)", "Stablecoin Liquidity (180d)"])
-    with tabs[0]:
-        try:
-            tvl_df = llama_solana_tvl()
+    with gcol:
+        tabs = st.tabs(["Solana TVL (365d)", "Stablecoin Liquidity (180d)"])
+        with tabs[0]:
             if tvl_df.empty:
                 st.info("No TVL history to display.")
             else:
                 st.altair_chart(line_chart(tvl_df, "date", "tvl", "Solana TVL (USD)", 320), use_container_width=True)
-        except Exception as e:
-            st.error(f"TVL chart error: {e}")
-    with tabs[1]:
-        try:
-            sc_df = cg_market_caps_sum(days=180)
+        with tabs[1]:
             if sc_df.empty:
                 st.info("No stablecoin history (rate limited?).")
             else:
                 st.altair_chart(line_chart(sc_df, "date", "total_cap", "USDT+USDC+DAI Market Cap (USD)", 320), use_container_width=True)
-        except Exception as e:
-            st.error(f"Stablecoin chart error: {e}")
 
 st.divider()
 
 # ---------------------------
-# NEW: SOL vs ETH — Relative Strength (365d)
+# SOL vs ETH — Relative Strength (deferred if Fast mode)
 # ---------------------------
 st.subheader("SOL vs ETH — Relative Strength")
+if fast_mode:
+    st.info("Fast mode is ON — toggle OFF to compute SOL/ETH relative strength.")
+else:
+    def sol_eth_ratio(days=365) -> pd.DataFrame:
+        sol = cg_market_chart("solana", days=days)
+        eth = cg_market_chart("ethereum", days=days)
+        if sol.empty or eth.empty:
+            return pd.DataFrame(columns=["date","sol_eth_ratio"])
+        merged = pd.merge_asof(
+            sol.sort_values("date"),
+            eth.sort_values("date"),
+            on="date",
+            direction="nearest",
+            tolerance=pd.Timedelta("1H"),
+            suffixes=("_sol","_eth")
+        ).dropna()
+        merged["sol_eth_ratio"] = merged["price_sol"] / merged["price_eth"]
+        return merged[["date","sol_eth_ratio"]]
 
-def sol_eth_ratio(days=365) -> pd.DataFrame:
-    sol = cg_market_chart("solana", days=days)
-    eth = cg_market_chart("ethereum", days=days)
-    if sol.empty or eth.empty:
-        return pd.DataFrame(columns=["date","sol_eth_ratio"])
-    merged = pd.merge_asof(
-        sol.sort_values("date"),
-        eth.sort_values("date"),
-        on="date",
-        direction="nearest",
-        tolerance=pd.Timedelta("1H"),
-        suffixes=("_sol","_eth")
-    ).dropna()
-    merged["sol_eth_ratio"] = merged["price_sol"] / merged["price_eth"]
-    return merged[["date","sol_eth_ratio"]]
-
-try:
-    rs = sol_eth_ratio(365)
+    with st.spinner("Loading SOL/ETH…"):
+        rs = sol_eth_ratio(365)
     if debug: st.info(f"SOL/ETH ratio df shape: {rs.shape}")
     if rs.empty:
         st.info("No ratio data (rate limited?).")
     else:
-        ch = line_chart(rs, "date", "sol_eth_ratio", "SOL/ETH", 320)
-        st.altair_chart(ch, use_container_width=True)
+        st.altair_chart(line_chart(rs, "date", "sol_eth_ratio", "SOL/ETH", 320), use_container_width=True)
         latest = float(rs.iloc[-1]["sol_eth_ratio"])
         ma30 = float(rs["sol_eth_ratio"].tail(30).mean())
         st.caption(f"Latest ratio: {latest:.4f} | 30-day avg: {ma30:.4f}")
-except Exception as e:
-    st.error(f"SOL/ETH ratio error: {e}")
 
-st.divider()
+st.caption("Tip: if you see 429 errors from CoinGecko, slow the refresh interval or keep Fast mode ON.")
 
-# ---------------------------
-# NEW: 30-Day Signals + Bullishness + Alerts
-# ---------------------------
-st.subheader("30-Day Trend Signals")
-
-def pct_to_score(pct, pos=20.0, neg=-20.0):
-    if pct is None: return None
-    denom = pos if pct >= 0 else abs(neg)
-    score = 50 + (pct/denom)*50
-    return max(0, min(100, score))
-
-# TVL 30d
-try:
-    tvl_30d = pct_change_over_days(llama_solana_tvl().rename(columns={"tvl":"value"}), "value", 30)
-except Exception:
-    tvl_30d = None
-
-# Stablecoins 30d
-try:
-    sc_df = cg_market_caps_sum(days=90)
-    stable_30d = pct_change_over_days(sc_df.rename(columns={"total_cap":"value"}), "value", 30)
-except Exception:
-    stable_30d = None
-
-# SOL/ETH vs 30d avg → % deviation
-rel_30d = None
-try:
-    rs = sol_eth_ratio(60)
-    if not rs.empty:
-        latest_ratio = float(rs.iloc[-1]["sol_eth_ratio"])
-        ma30 = float(rs["sol_eth_ratio"].tail(30).mean())
-        if ma30 != 0:
-            rel_30d = (latest_ratio/ma30 - 1) * 100.0
-except Exception:
-    pass
-
-c1, c2, c3 = st.columns(3)
-with c1: st.metric("TVL 30d", "—" if tvl_30d is None else f"{tvl_30d:.1f}%")
-with c2: st.metric("Stablecoins 30d", "—" if stable_30d is None else f"{stable_30d:.1f}%")
-with c3: st.metric("SOL/ETH vs 30d avg", "—" if rel_30d is None else f"{rel_30d:.1f}%")
-
-st.subheader("Bullishness Score")
-score_tvl     = pct_to_score(tvl_30d)
-score_stables = pct_to_score(stable_30d)
-score_rel     = pct_to_score(rel_30d, 15.0, -15.0)  # tighter band for ratio
-
-weights = {"tvl": 0.40, "stables": 0.35, "rel": 0.25}
-num = sum(s*w for s, w in [(score_tvl, weights["tvl"]), (score_stables, weights["stables"]), (score_rel, weights["rel"])] if s is not None)
-den = sum(w for s, w in [(score_tvl, weights["tvl"]), (score_stables, weights["stables"]), (score_rel, weights["rel"])] if s is not None)
-score = (num/den) if den > 0 else None
-
-prev = st.session_state.get("last_bull_score")
-if score is None:
-    st.info("Not enough data yet to compute a score.")
-else:
-    delta = None if prev is None else score - prev
-    st.session_state["last_bull_score"] = score
-    light = "🟢" if score >= 70 else ("🟠" if score >= 40 else "🔴")
-    x1, x2 = st.columns([1,1])
-    with x1:
-        st.markdown(f"### {score:.0f} / 100")
-        if delta is not None:
-            st.caption(f"Δ since last view: {delta:+.0f}")
-    with x2:
-        st.markdown(f"### Signal: {light}")
-
-# Alerts
-st.subheader("Alerts")
-alerts = []
-def add_alert(ok, msg):
-    if ok: alerts.append(msg)
-
-add_alert(tvl_30d is not None and tvl_30d <= -10, f"Solana TVL 30d is {tvl_30d:.1f}% (≤ -10%).")
-add_alert(stable_30d is not None and stable_30d <= -10, f"Stablecoin cap proxy 30d is {stable_30d:.1f}% (≤ -10%).")
-add_alert(rel_30d is not None and rel_30d <= -5, f"SOL/ETH vs 30d avg is {rel_30d:.1f}% (≤ -5%).")
-
-if alerts:
-    st.warning("⚠️ Risk flags:\n\n- " + "\n- ".join(alerts))
-else:
-    st.success("✅ No major risk flags right now.")
-
-st.caption("Tip: if you see 429 errors from CoinGecko, slow the refresh interval or try again later.")
 
 
 
